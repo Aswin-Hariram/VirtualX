@@ -278,9 +278,10 @@ export class ClassroomManager {
           // Create a new MediaStream to avoid reference issues
           const newStream = new MediaStream();
           
+          // Add tracks to the new stream and ensure they're enabled
           remoteStream.getTracks().forEach(track => {
             track.enabled = true;
-            newStream.addTrack(track);
+            newStream.addTrack(track.clone()); // Clone the track to avoid reference issues
             
             // Enhanced track monitoring
             track.onended = () => {
@@ -300,7 +301,9 @@ export class ClassroomManager {
             };
           });
 
+          // Call the callback with the new stream
           if (this.onParticipantJoined) {
+            console.log('Calling onParticipantJoined with new stream');
             this.onParticipantJoined('teacher', newStream);
           }
 
@@ -312,6 +315,19 @@ export class ClassroomManager {
                   console.log(`Recovering ${track.kind} track...`);
                   track.enabled = true;
                 }
+
+                // Check track stats
+                pc.getStats(track).then(stats => {
+                  stats.forEach(report => {
+                    if (report.type === 'inbound-rtp') {
+                      console.log(`Track ${track.kind} stats:`, {
+                        packetsReceived: report.packetsReceived,
+                        packetsLost: report.packetsLost,
+                        jitter: report.jitter
+                      });
+                    }
+                  });
+                }).catch(console.error);
               });
             } else {
               clearInterval(trackHealthCheck);
@@ -319,7 +335,10 @@ export class ClassroomManager {
           }, 2000);
 
           // Store interval for cleanup
-          this.unsubscribers.add(() => clearInterval(trackHealthCheck));
+          this.unsubscribers.add(() => {
+            clearInterval(trackHealthCheck);
+            newStream.getTracks().forEach(track => track.stop());
+          });
         }
       };
 

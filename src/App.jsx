@@ -374,22 +374,24 @@ const App = () => {
                     }))
                 });
 
-                // Create a new MediaStream to avoid reference issues
-                const newStream = new MediaStream();
+                // Ensure all tracks are enabled
                 remoteStream.getTracks().forEach(track => {
                     track.enabled = true;
-                    newStream.addTrack(track);
                 });
 
                 // Set up video element
-                mainVideoRef.current.srcObject = newStream;
-                mainVideoRef.current.muted = true;
+                if (mainVideoRef.current.srcObject !== remoteStream) {
+                    mainVideoRef.current.srcObject = remoteStream;
+                    mainVideoRef.current.muted = true;
+                }
                 
                 // Add play error handling with retry mechanism
                 const playVideo = async (retries = 3) => {
                     try {
-                        await mainVideoRef.current.play();
-                        console.log('Remote video playing successfully');
+                        if (mainVideoRef.current.paused) {
+                            await mainVideoRef.current.play();
+                            console.log('Remote video playing successfully');
+                        }
                     } catch (error) {
                         console.error('Error playing remote video:', error);
                         if (retries > 0) {
@@ -433,6 +435,15 @@ const App = () => {
                             console.log('Video is paused, attempting to resume...');
                             playVideo();
                         }
+
+                        // Log video element state
+                        console.log('Video element state:', {
+                            paused: mainVideoRef.current.paused,
+                            currentTime: mainVideoRef.current.currentTime,
+                            readyState: mainVideoRef.current.readyState,
+                            networkState: mainVideoRef.current.networkState,
+                            error: mainVideoRef.current.error
+                        });
                     }
                 }, 2000);
 
@@ -668,9 +679,16 @@ const App = () => {
       // Set up callback for teacher's stream
       manager.onParticipantJoined = (teacherId, teacherStream) => {
         console.log('Received teacher stream:', teacherStream);
-        setRemoteStream(teacherStream);
-        if (mainVideoRef.current) {
-          mainVideoRef.current.srcObject = teacherStream;
+        if (teacherStream && teacherStream.getTracks().length > 0) {
+          // Create a new MediaStream to avoid reference issues
+          const newStream = new MediaStream();
+          teacherStream.getTracks().forEach(track => {
+            track.enabled = true;
+            newStream.addTrack(track);
+          });
+          setRemoteStream(newStream);
+        } else {
+          console.error('Received invalid teacher stream:', teacherStream);
         }
       };
 
@@ -1045,7 +1063,11 @@ const App = () => {
                     className={participantVideoStyle}
                     style={{ transform: 'scaleX(-1)' }}
                     onLoadedMetadata={(e) => {
-                      console.log('Main video metadata loaded');
+                      console.log('Main video metadata loaded:', {
+                        videoWidth: e.target.videoWidth,
+                        videoHeight: e.target.videoHeight,
+                        readyState: e.target.readyState
+                      });
                       const video = e.target;
                       if (video.paused) {
                         video.play().catch(err => {
@@ -1055,6 +1077,21 @@ const App = () => {
                           }, { once: true });
                         });
                       }
+                    }}
+                    onError={(e) => {
+                      console.error('Main video error:', e.target.error);
+                    }}
+                    onStalled={() => {
+                      console.warn('Main video stalled');
+                    }}
+                    onSuspend={() => {
+                      console.warn('Main video suspended');
+                    }}
+                    onWaiting={() => {
+                      console.warn('Main video waiting');
+                    }}
+                    onPlaying={() => {
+                      console.log('Main video started playing');
                     }}
                   />
                 )}
