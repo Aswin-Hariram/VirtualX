@@ -1,6 +1,7 @@
 import firebase from 'firebase/app';
 import { auth } from '../firebase-config';
 import { servers } from '../firebase-webrtc';
+import { SDPUtils } from 'sdp-utils';
 
 export class ClassroomManager {
   constructor(firestore) {
@@ -125,14 +126,27 @@ export class ClassroomManager {
               'stun:stun1.l.google.com:19302',
               'stun:stun2.l.google.com:19302'
             ]
+          }
+        ],
+        // Add enhanced video quality settings
+        encodings: [
+          {
+            rid: 'high',
+            maxBitrate: 3500000, // 3.5 Mbps
+            maxFramerate: 30,
+            scaleResolutionDownBy: 1
           },
           {
-            urls: [
-              'turn:turn.anyfirebase.com:3478',
-              'turn:turn.anyfirebase.com:443?transport=tcp'
-            ],
-            username: 'webrtc',
-            credential: 'webrtc'
+            rid: 'medium',
+            maxBitrate: 2500000, // 2.5 Mbps
+            maxFramerate: 30,
+            scaleResolutionDownBy: 1.5
+          },
+          {
+            rid: 'low',
+            maxBitrate: 1500000, // 1.5 Mbps
+            maxFramerate: 30,
+            scaleResolutionDownBy: 2
           }
         ]
       });
@@ -215,6 +229,59 @@ export class ClassroomManager {
         }
       };
 
+      // Add bandwidth control
+      const setBandwidthConstraints = (sdp) => {
+        const modifier = new SDPUtils();
+        sdp = modifier.setVideoBitrates(sdp, {
+          min: 1000, // 1 Mbps
+          max: 3500  // 3.5 Mbps
+        });
+        sdp = modifier.setAudioBitrate(sdp, 128); // 128 kbps for audio
+        return sdp;
+      };
+
+      // Add video quality monitoring and adaptation
+      const monitorVideoQuality = async (sender) => {
+        try {
+          const stats = await sender.getStats();
+          let totalPacketsLost = 0;
+          let totalPacketsSent = 0;
+          let bitrateSum = 0;
+          let statCount = 0;
+
+          stats.forEach(stat => {
+            if (stat.type === 'outbound-rtp' && stat.kind === 'video') {
+              totalPacketsLost += stat.packetsLost || 0;
+              totalPacketsSent += stat.packetsSent || 0;
+              if (stat.bytesSent && stat.timestamp) {
+                bitrateSum += (stat.bytesSent * 8) / (stat.timestamp / 1000);
+                statCount++;
+              }
+            }
+          });
+
+          const packetLossRate = totalPacketsSent ? (totalPacketsLost / totalPacketsSent) : 0;
+          const averageBitrate = statCount ? (bitrateSum / statCount) : 0;
+
+          // Adapt video quality based on network conditions
+          if (packetLossRate > 0.1) { // More than 10% packet loss
+            console.log('High packet loss detected, reducing video quality');
+            await sender.setParameters({
+              ...sender.getParameters(),
+              degradationPreference: 'maintain-framerate'
+            });
+          } else if (packetLossRate < 0.05 && averageBitrate > 2000000) { // Less than 5% loss and good bandwidth
+            console.log('Good network conditions, increasing video quality');
+            await sender.setParameters({
+              ...sender.getParameters(),
+              degradationPreference: 'maintain-resolution'
+            });
+          }
+        } catch (error) {
+          console.error('Error monitoring video quality:', error);
+        }
+      };
+
       // Add local tracks to the connection with enhanced monitoring
       this.localStream.getTracks().forEach(track => {
         console.log('Adding track to connection:', {
@@ -223,18 +290,20 @@ export class ClassroomManager {
           enabled: track.enabled,
           muted: track.muted
         });
+        
         const sender = pc.addTrack(track, this.localStream);
         
-        // Monitor track states
-        const trackMonitor = setInterval(() => {
-          if (track.muted || !track.enabled) {
-            console.log(`Track ${track.kind} is muted or disabled, attempting to re-enable...`);
-            track.enabled = true;
-          }
-        }, 2000);
+        if (track.kind === 'video') {
+          // Set up quality monitoring interval
+          const qualityMonitor = setInterval(() => {
+            if (pc.connectionState === 'connected') {
+              monitorVideoQuality(sender);
+            }
+          }, 5000);
 
-        // Store interval for cleanup
-        this.unsubscribers.add(() => clearInterval(trackMonitor));
+          // Store interval for cleanup
+          this.unsubscribers.add(() => clearInterval(qualityMonitor));
+        }
       });
 
       // Create and send offer with enhanced options
@@ -244,6 +313,9 @@ export class ClassroomManager {
         iceRestart: true,
         voiceActivityDetection: true
       });
+
+      // Apply bandwidth constraints
+      offer.sdp = setBandwidthConstraints(offer.sdp);
 
       console.log('Created offer:', {
         type: offer.type,
@@ -740,8 +812,41 @@ export class ClassroomManager {
           isEnabled
         });
 
+        // Update all audio tracks
         audioTracks.forEach(track => {
           track.enabled = isEnabled;
+          
+          // Set up track monitoring
+          track.onmute = () => {
+            console.warn('Audio track muted unexpectedly');
+            if (isEnabled) {
+              track.enabled = true;
+            }
+          };
+
+          track.onunmute = () => {
+            console.log('Audio track unmuted');
+          };
+
+          track.onended = async () => {
+            console.warn('Audio track ended unexpectedly');
+            try {
+              // Attempt to recover the audio track
+              const newStream = await navigator.mediaDevices.getUserMedia({ 
+                audio: {
+                  echoCancellation: true,
+                  noiseSuppression: true,
+                  autoGainControl: true
+                }
+              });
+              const newAudioTrack = newStream.getAudioTracks()[0];
+              this.localStream.removeTrack(track);
+              this.localStream.addTrack(newAudioTrack);
+              newAudioTrack.enabled = isEnabled;
+            } catch (error) {
+              console.error('Failed to recover audio track:', error);
+            }
+          };
         });
 
         // Update all peer connections
@@ -749,11 +854,36 @@ export class ClassroomManager {
           const audioSender = pc.getSenders().find(sender => 
             sender.track && sender.track.kind === 'audio'
           );
+          
           if (audioSender && audioSender.track) {
             audioSender.track.enabled = isEnabled;
+            
+            // Monitor sender stats
+            const monitorSenderStats = async () => {
+              try {
+                const stats = await audioSender.getStats();
+                stats.forEach(report => {
+                  if (report.type === 'outbound-rtp') {
+                    console.log(`Audio sender stats for peer ${peerId}:`, {
+                      bytesSent: report.bytesSent,
+                      packetsSent: report.packetsSent,
+                      timestamp: report.timestamp
+                    });
+                  }
+                });
+              } catch (error) {
+                console.error('Error getting audio sender stats:', error);
+              }
+            };
+
+            // Monitor stats periodically
+            const statsInterval = setInterval(monitorSenderStats, 5000);
+            this.unsubscribers.add(() => clearInterval(statsInterval));
+
             console.log(`Updated audio sender for peer ${peerId}:`, {
               enabled: audioSender.track.enabled,
-              muted: audioSender.track.muted
+              muted: audioSender.track.muted,
+              readyState: audioSender.track.readyState
             });
           }
         });
@@ -768,7 +898,17 @@ export class ClassroomManager {
 
           await participantRef.update({
             isAudioEnabled: isEnabled,
-            lastAudioUpdate: firebase.firestore.FieldValue.serverTimestamp()
+            lastAudioUpdate: firebase.firestore.FieldValue.serverTimestamp(),
+            audioState: {
+              enabled: isEnabled,
+              timestamp: Date.now(),
+              trackInfo: audioTracks.map(track => ({
+                label: track.label,
+                enabled: track.enabled,
+                muted: track.muted,
+                readyState: track.readyState
+              }))
+            }
           });
         }
       }

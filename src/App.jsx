@@ -739,27 +739,73 @@ const App = () => {
   const toggleMute = async () => {
     try {
       if (localStream) {
+        const audioTracks = localStream.getAudioTracks();
+        console.log('Toggling mute state. Audio tracks:', audioTracks.map(track => ({
+          label: track.label,
+          enabled: track.enabled,
+          muted: track.muted,
+          readyState: track.readyState
+        })));
+
+        if (audioTracks.length === 0) {
+          throw new Error('No audio tracks available');
+        }
+
         const newMuteState = !isMuted;
         
         // Update local tracks first
-        const audioTracks = localStream.getAudioTracks();
-        console.log('Toggling mute state. Current audio tracks:', audioTracks);
-
         audioTracks.forEach(track => {
-          track.enabled = newMuteState;
+          track.enabled = !newMuteState;
           console.log(`Audio track ${track.label} enabled:`, track.enabled);
+          
+          // Monitor track state changes
+          track.onmute = () => {
+            console.warn('Audio track muted unexpectedly');
+            if (!isMuted) {
+              track.enabled = true;
+            }
+          };
+
+          track.onunmute = () => {
+            console.log('Audio track unmuted');
+          };
+
+          track.onended = async () => {
+            console.warn('Audio track ended unexpectedly');
+            try {
+              // Attempt to recover the audio track
+              const newStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+              const newAudioTrack = newStream.getAudioTracks()[0];
+              localStream.removeTrack(track);
+              localStream.addTrack(newAudioTrack);
+              newAudioTrack.enabled = !isMuted;
+            } catch (error) {
+              console.error('Failed to recover audio track:', error);
+            }
+          };
         });
 
         // Update through ClassroomManager to sync with peers
         if (classroomManagerRef.current) {
-          await classroomManagerRef.current.updateAudioState(newMuteState);
+          await classroomManagerRef.current.updateAudioState(!newMuteState);
         }
 
-        setIsMuted(!newMuteState);
+        // Update UI state
+        setIsMuted(newMuteState);
+
+        // Log the new state
+        console.log('Mute state updated:', {
+          isMuted: newMuteState,
+          audioTracks: audioTracks.map(track => ({
+            label: track.label,
+            enabled: track.enabled,
+            muted: track.muted
+          }))
+        });
       }
     } catch (error) {
       console.error('Error toggling mute:', error);
-      alert('Failed to toggle mute. Please try again.');
+      alert('Failed to toggle mute. Please check your microphone access and try again.');
     }
   };
 
@@ -1079,7 +1125,12 @@ const App = () => {
                     playsInline
                     muted={true}
                     className={participantVideoStyle}
-                    style={{ transform: 'scaleX(-1)' }}
+                    style={{ 
+                      transform: 'scaleX(-1)',
+                      objectFit: 'cover',
+                      width: '100%',
+                      height: '100%'
+                    }}
                     onLoadedMetadata={(e) => {
                       console.log('Main video metadata loaded:', {
                         videoWidth: e.target.videoWidth,
@@ -1087,6 +1138,16 @@ const App = () => {
                         readyState: e.target.readyState
                       });
                       const video = e.target;
+                      
+                      // Set video element properties for better quality
+                      video.playbackRate = 1.0;
+                      video.volume = 1.0;
+                      video.playsinline = true;
+                      
+                      // Enable hardware acceleration if available
+                      video.style.transform = 'translateZ(0)';
+                      video.style.backfaceVisibility = 'hidden';
+                      
                       if (video.paused) {
                         video.play().catch(err => {
                           console.error('Error playing main video:', err);
@@ -1110,6 +1171,10 @@ const App = () => {
                     }}
                     onPlaying={() => {
                       console.log('Main video started playing');
+                      // Ensure video quality settings are maintained
+                      if (mainVideoRef.current) {
+                        mainVideoRef.current.playbackQuality = 'high';
+                      }
                     }}
                   />
                 )}

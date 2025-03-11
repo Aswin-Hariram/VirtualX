@@ -50,24 +50,47 @@ export const startLocalStream = async (selectedVideoDevice, selectedAudioDevice)
       throw new Error('Your browser does not support video/audio capture. Please try a different browser.');
     }
 
-    // Set up constraints based on available devices
+    // Enhanced audio constraints for better quality
     const constraints = {
       video: selectedVideoDevice 
         ? { 
             deviceId: { exact: selectedVideoDevice },
-            width: { ideal: 1280 },
-            height: { ideal: 720 },
-            frameRate: { ideal: 30 }
+            width: { min: 640, ideal: 1920, max: 1920 },
+            height: { min: 480, ideal: 1080, max: 1080 },
+            frameRate: { min: 24, ideal: 30, max: 60 },
+            aspectRatio: { ideal: 1.7777777778 },
+            resizeMode: 'crop-and-scale'
           }
         : {
-            width: { ideal: 1280 },
-            height: { ideal: 720 },
-            frameRate: { ideal: 30 },
+            width: { min: 640, ideal: 1920, max: 1920 },
+            height: { min: 480, ideal: 1080, max: 1080 },
+            frameRate: { min: 24, ideal: 30, max: 60 },
+            aspectRatio: { ideal: 1.7777777778 },
+            resizeMode: 'crop-and-scale',
             facingMode: 'user'
           },
       audio: selectedAudioDevice
-        ? { deviceId: { exact: selectedAudioDevice } }
-        : true
+        ? { 
+            deviceId: { exact: selectedAudioDevice },
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+            channelCount: 2,
+            sampleRate: 48000,
+            sampleSize: 16,
+            latency: 0,
+            volume: 1.0
+          }
+        : {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+            channelCount: 2,
+            sampleRate: 48000,
+            sampleSize: 16,
+            latency: 0,
+            volume: 1.0
+          }
     };
 
     // Get the stream with the specified constraints
@@ -81,10 +104,54 @@ export const startLocalStream = async (selectedVideoDevice, selectedAudioDevice)
       throw new Error('No video track available in the stream');
     }
 
+    if (!audioTrack) {
+      throw new Error('No audio track available in the stream');
+    }
+
     // Enable tracks by default
     videoTrack.enabled = true;
-    if (audioTrack) {
+    audioTrack.enabled = true;
+
+    // Log audio track capabilities and settings
+    console.log('Audio track capabilities:', audioTrack.getCapabilities());
+    console.log('Audio track settings:', audioTrack.getSettings());
+    console.log('Audio track constraints:', audioTrack.getConstraints());
+
+    // Set up audio track monitoring
+    audioTrack.onmute = () => {
+      console.warn('Audio track muted unexpectedly');
       audioTrack.enabled = true;
+    };
+
+    audioTrack.onunmute = () => {
+      console.log('Audio track unmuted');
+    };
+
+    audioTrack.onended = () => {
+      console.warn('Audio track ended unexpectedly');
+      // Attempt to recover the audio track
+      navigator.mediaDevices.getUserMedia({ audio: constraints.audio })
+        .then(newStream => {
+          const newAudioTrack = newStream.getAudioTracks()[0];
+          stream.removeTrack(audioTrack);
+          stream.addTrack(newAudioTrack);
+        })
+        .catch(console.error);
+    };
+
+    // Apply audio processing constraints
+    if (audioTrack.applyConstraints) {
+      try {
+        await audioTrack.applyConstraints({
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+          channelCount: 2,
+          sampleRate: 48000
+        });
+      } catch (error) {
+        console.warn('Could not apply ideal audio constraints:', error);
+      }
     }
 
     // Log track information
@@ -100,26 +167,15 @@ export const startLocalStream = async (selectedVideoDevice, selectedAudioDevice)
         label: audioTrack.label,
         enabled: audioTrack.enabled,
         muted: audioTrack.muted,
-        readyState: audioTrack.readyState
+        readyState: audioTrack.readyState,
+        settings: audioTrack.getSettings()
       } : null
     });
     
     return stream;
   } catch (error) {
-    console.error('Error accessing media devices:', error);
-    
-    // Provide more specific error messages
-    if (error.name === 'NotAllowedError' || error.name === 'PermissionDeniedError') {
-      throw new Error('Camera/microphone access was denied. Please allow access in your browser settings.');
-    } else if (error.name === 'NotFoundError' || error.name === 'DevicesNotFoundError') {
-      throw new Error('No camera or microphone found. Please check your device connections.');
-    } else if (error.name === 'NotReadableError' || error.name === 'TrackStartError') {
-      throw new Error('Your camera or microphone is already in use by another application.');
-    } else if (error.name === 'OverconstrainedError') {
-      throw new Error('Could not find a camera matching the requirements. Please try a different camera.');
-    } else {
-      throw new Error(`Could not access camera or microphone: ${error.message}`);
-    }
+    console.error('Error getting media stream:', error);
+    throw error;
   }
 };
 
