@@ -374,31 +374,43 @@ const App = () => {
                     }))
                 });
 
-                // Ensure all tracks are enabled
+                // Create a new MediaStream to avoid reference issues
+                const newStream = new MediaStream();
                 remoteStream.getTracks().forEach(track => {
                     track.enabled = true;
+                    newStream.addTrack(track);
                 });
 
                 // Set up video element
-                mainVideoRef.current.srcObject = remoteStream;
+                mainVideoRef.current.srcObject = newStream;
+                mainVideoRef.current.muted = true;
                 
-                // Add play error handling
-                const playPromise = mainVideoRef.current.play();
-                if (playPromise) {
-                    playPromise.catch(error => {
+                // Add play error handling with retry mechanism
+                const playVideo = async (retries = 3) => {
+                    try {
+                        await mainVideoRef.current.play();
+                        console.log('Remote video playing successfully');
+                    } catch (error) {
                         console.error('Error playing remote video:', error);
-                        // Retry play on user interaction
-                        const retryPlay = async () => {
-                            try {
-                                await mainVideoRef.current.play();
-                                document.removeEventListener('click', retryPlay);
-                            } catch (e) {
-                                console.error('Retry play failed:', e);
-                            }
-                        };
-                        document.addEventListener('click', retryPlay);
-                    });
-                }
+                        if (retries > 0) {
+                            console.log(`Retrying playback, ${retries} attempts left`);
+                            setTimeout(() => playVideo(retries - 1), 1000);
+                        } else {
+                            // Add click-to-play fallback
+                            const retryPlay = async () => {
+                                try {
+                                    await mainVideoRef.current.play();
+                                    document.removeEventListener('click', retryPlay);
+                                } catch (e) {
+                                    console.error('Retry play failed:', e);
+                                }
+                            };
+                            document.addEventListener('click', retryPlay);
+                        }
+                    }
+                };
+
+                await playVideo();
 
                 // Monitor remote stream health
                 const healthCheck = setInterval(() => {
@@ -415,12 +427,22 @@ const App = () => {
                                 }
                             });
                         }
+
+                        // Check if video is actually playing
+                        if (mainVideoRef.current.paused) {
+                            console.log('Video is paused, attempting to resume...');
+                            playVideo();
+                        }
                     }
                 }, 2000);
 
                 return () => {
                     clearInterval(healthCheck);
                     if (mainVideoRef.current) {
+                        const oldStream = mainVideoRef.current.srcObject;
+                        if (oldStream) {
+                            oldStream.getTracks().forEach(track => track.stop());
+                        }
                         mainVideoRef.current.srcObject = null;
                     }
                 };

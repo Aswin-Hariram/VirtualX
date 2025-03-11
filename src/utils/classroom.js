@@ -275,21 +275,51 @@ export class ClassroomManager {
             }))
           });
 
+          // Create a new MediaStream to avoid reference issues
+          const newStream = new MediaStream();
+          
           remoteStream.getTracks().forEach(track => {
             track.enabled = true;
+            newStream.addTrack(track);
             
-            // Handle track ended events
+            // Enhanced track monitoring
             track.onended = () => {
               console.log(`Remote ${track.kind} track ended, attempting to recover...`);
               if (pc.connectionState === 'connected') {
                 this.handleTrackEnded(pc, track);
               }
             };
+
+            track.onmute = () => {
+              console.log(`Remote ${track.kind} track muted, attempting to unmute...`);
+              track.enabled = true;
+            };
+
+            track.onunmute = () => {
+              console.log(`Remote ${track.kind} track unmuted`);
+            };
           });
 
           if (this.onParticipantJoined) {
-            this.onParticipantJoined('teacher', remoteStream);
+            this.onParticipantJoined('teacher', newStream);
           }
+
+          // Set up periodic track health check
+          const trackHealthCheck = setInterval(() => {
+            if (pc.connectionState === 'connected') {
+              newStream.getTracks().forEach(track => {
+                if (!track.enabled || track.muted) {
+                  console.log(`Recovering ${track.kind} track...`);
+                  track.enabled = true;
+                }
+              });
+            } else {
+              clearInterval(trackHealthCheck);
+            }
+          }, 2000);
+
+          // Store interval for cleanup
+          this.unsubscribers.add(() => clearInterval(trackHealthCheck));
         }
       };
 
