@@ -736,12 +736,30 @@ const App = () => {
     }
   };
 
-  const toggleMute = () => {
-    if (localStream) {
-      localStream.getAudioTracks().forEach(track => {
-        track.enabled = !track.enabled;
-      });
-      setIsMuted(!isMuted);
+  const toggleMute = async () => {
+    try {
+      if (localStream) {
+        const newMuteState = !isMuted;
+        
+        // Update local tracks first
+        const audioTracks = localStream.getAudioTracks();
+        console.log('Toggling mute state. Current audio tracks:', audioTracks);
+
+        audioTracks.forEach(track => {
+          track.enabled = newMuteState;
+          console.log(`Audio track ${track.label} enabled:`, track.enabled);
+        });
+
+        // Update through ClassroomManager to sync with peers
+        if (classroomManagerRef.current) {
+          await classroomManagerRef.current.updateAudioState(newMuteState);
+        }
+
+        setIsMuted(!newMuteState);
+      }
+    } catch (error) {
+      console.error('Error toggling mute:', error);
+      alert('Failed to toggle mute. Please try again.');
     }
   };
 

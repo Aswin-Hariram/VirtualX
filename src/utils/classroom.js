@@ -731,6 +731,53 @@ export class ClassroomManager {
     }
   }
 
+  async updateAudioState(isEnabled) {
+    try {
+      if (this.localStream) {
+        const audioTracks = this.localStream.getAudioTracks();
+        console.log('Updating audio state:', {
+          tracks: audioTracks.length,
+          isEnabled
+        });
+
+        audioTracks.forEach(track => {
+          track.enabled = isEnabled;
+        });
+
+        // Update all peer connections
+        this.peerConnections.forEach((pc, peerId) => {
+          const audioSender = pc.getSenders().find(sender => 
+            sender.track && sender.track.kind === 'audio'
+          );
+          if (audioSender && audioSender.track) {
+            audioSender.track.enabled = isEnabled;
+            console.log(`Updated audio sender for peer ${peerId}:`, {
+              enabled: audioSender.track.enabled,
+              muted: audioSender.track.muted
+            });
+          }
+        });
+
+        // Update participant document if we're a student
+        if (this.role === 'student' && this.participantId && this.roomId) {
+          const participantRef = this.firestore
+            .collection('classrooms')
+            .doc(this.roomId)
+            .collection('participants')
+            .doc(this.participantId);
+
+          await participantRef.update({
+            isAudioEnabled: isEnabled,
+            lastAudioUpdate: firebase.firestore.FieldValue.serverTimestamp()
+          });
+        }
+      }
+    } catch (error) {
+      console.error('Error updating audio state:', error);
+      throw error;
+    }
+  }
+
   cleanup() {
     // Clean up peer connections
     this.peerConnections.forEach(pc => pc.close());

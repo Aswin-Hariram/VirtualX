@@ -67,9 +67,14 @@ const VideoControls = ({
         <ControlButton
           onClick={onToggleMute}
           active={!isMuted}
+          activeColor="bg-blue-500 hover:bg-blue-400"
+          inactiveColor="bg-red-500 hover:bg-red-400"
         >
           {isMuted ? (
-            <MicOff className="w-6 h-6 text-white" />
+            <div className="relative">
+              <MicOff className="w-6 h-6 text-white" />
+              <div className="absolute -top-1 -right-1 w-2 h-2 bg-red-500 rounded-full animate-pulse" />
+            </div>
           ) : (
             <Mic className="w-6 h-6 text-white" />
           )}
