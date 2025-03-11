@@ -1,7 +1,7 @@
 import firebase from 'firebase/app';
 import { auth } from '../firebase-config';
 import { servers } from '../firebase-webrtc';
-import { SDPUtils } from 'sdp-utils';
+import { sdpUtils } from './sdp-utils';
 
 export class ClassroomManager {
   constructor(firestore) {
@@ -231,12 +231,13 @@ export class ClassroomManager {
 
       // Add bandwidth control
       const setBandwidthConstraints = (sdp) => {
-        const modifier = new SDPUtils();
-        sdp = modifier.setVideoBitrates(sdp, {
+        sdp = sdpUtils.setVideoBitrates(sdp, {
           min: 1000, // 1 Mbps
           max: 3500  // 3.5 Mbps
         });
-        sdp = modifier.setAudioBitrate(sdp, 128); // 128 kbps for audio
+        sdp = sdpUtils.setAudioBitrate(sdp, 128); // 128 kbps for audio
+        sdp = sdpUtils.addQualityParameters(sdp);
+        sdp = sdpUtils.preferHighQualityCodecs(sdp);
         return sdp;
       };
 
