@@ -119,34 +119,39 @@ export class ClassroomManager {
         bundlePolicy: 'max-bundle',
         rtcpMuxPolicy: 'require',
         iceTransportPolicy: 'all',
-        iceCandidatePoolSize: 10,
+        iceCandidatePoolSize: 15,
         iceServers: [
           {
             urls: [
               'stun:stun1.l.google.com:19302',
-              'stun:stun2.l.google.com:19302'
+              'stun:stun2.l.google.com:19302',
+              'stun:stun3.l.google.com:19302',
+              'stun:stun4.l.google.com:19302'
             ]
           }
         ],
-        // Add enhanced video quality settings
+        // Enhanced video quality settings
         encodings: [
           {
+            rid: 'ultra',
+            maxBitrate: 8000000, // 8 Mbps
+            maxFramerate: 60,
+            scaleResolutionDownBy: 1,
+            networkPriority: 'high'
+          },
+          {
             rid: 'high',
-            maxBitrate: 3500000, // 3.5 Mbps
+            maxBitrate: 5000000, // 5 Mbps
             maxFramerate: 30,
-            scaleResolutionDownBy: 1
+            scaleResolutionDownBy: 1,
+            networkPriority: 'medium'
           },
           {
             rid: 'medium',
             maxBitrate: 2500000, // 2.5 Mbps
             maxFramerate: 30,
-            scaleResolutionDownBy: 1.5
-          },
-          {
-            rid: 'low',
-            maxBitrate: 1500000, // 1.5 Mbps
-            maxFramerate: 30,
-            scaleResolutionDownBy: 2
+            scaleResolutionDownBy: 1.5,
+            networkPriority: 'low'
           }
         ]
       });
@@ -229,19 +234,19 @@ export class ClassroomManager {
         }
       };
 
-      // Add bandwidth control
+      // Add bandwidth control with enhanced settings
       const setBandwidthConstraints = (sdp) => {
         sdp = sdpUtils.setVideoBitrates(sdp, {
-          min: 1000, // 1 Mbps
-          max: 3500  // 3.5 Mbps
+          min: 2500,  // 2.5 Mbps minimum
+          max: 8000   // 8 Mbps maximum
         });
-        sdp = sdpUtils.setAudioBitrate(sdp, 128); // 128 kbps for audio
+        sdp = sdpUtils.setAudioBitrate(sdp, 256); // 256 kbps for high-quality audio
         sdp = sdpUtils.addQualityParameters(sdp);
         sdp = sdpUtils.preferHighQualityCodecs(sdp);
         return sdp;
       };
 
-      // Add video quality monitoring and adaptation
+      // Enhanced video quality monitoring and adaptation
       const monitorVideoQuality = async (sender) => {
         try {
           const stats = await sender.getStats();
@@ -249,6 +254,7 @@ export class ClassroomManager {
           let totalPacketsSent = 0;
           let bitrateSum = 0;
           let statCount = 0;
+          let framerateMeasurements = [];
 
           stats.forEach(stat => {
             if (stat.type === 'outbound-rtp' && stat.kind === 'video') {
@@ -258,26 +264,50 @@ export class ClassroomManager {
                 bitrateSum += (stat.bytesSent * 8) / (stat.timestamp / 1000);
                 statCount++;
               }
+              if (stat.framesPerSecond) {
+                framerateMeasurements.push(stat.framesPerSecond);
+              }
             }
           });
 
           const packetLossRate = totalPacketsSent ? (totalPacketsLost / totalPacketsSent) : 0;
           const averageBitrate = statCount ? (bitrateSum / statCount) : 0;
+          const averageFramerate = framerateMeasurements.length ? 
+            framerateMeasurements.reduce((a, b) => a + b, 0) / framerateMeasurements.length : 0;
 
-          // Adapt video quality based on network conditions
-          if (packetLossRate > 0.1) { // More than 10% packet loss
-            console.log('High packet loss detected, reducing video quality');
-            await sender.setParameters({
-              ...sender.getParameters(),
-              degradationPreference: 'maintain-framerate'
-            });
-          } else if (packetLossRate < 0.05 && averageBitrate > 2000000) { // Less than 5% loss and good bandwidth
-            console.log('Good network conditions, increasing video quality');
-            await sender.setParameters({
-              ...sender.getParameters(),
-              degradationPreference: 'maintain-resolution'
-            });
+          // Advanced quality adaptation based on network conditions
+          const parameters = sender.getParameters();
+          if (parameters.encodings && parameters.encodings.length > 0) {
+            if (packetLossRate < 0.01 && averageBitrate > 6000000) {
+              // Excellent network conditions - push for maximum quality
+              console.log('Excellent network conditions, maximizing quality');
+              parameters.encodings[0].maxBitrate = 8000000;
+              parameters.encodings[0].maxFramerate = 60;
+              parameters.degradationPreference = 'maintain-resolution';
+            } else if (packetLossRate < 0.05 && averageBitrate > 4000000) {
+              // Good network conditions
+              console.log('Good network conditions, high quality');
+              parameters.encodings[0].maxBitrate = 5000000;
+              parameters.encodings[0].maxFramerate = 30;
+              parameters.degradationPreference = 'balanced';
+            } else if (packetLossRate > 0.1 || averageBitrate < 2000000) {
+              // Poor network conditions
+              console.log('Network conditions degraded, adjusting quality');
+              parameters.encodings[0].maxBitrate = 2500000;
+              parameters.encodings[0].maxFramerate = 30;
+              parameters.degradationPreference = 'maintain-framerate';
+            }
+
+            await sender.setParameters(parameters);
           }
+
+          // Log detailed quality metrics
+          console.log('Stream Quality Metrics:', {
+            packetLossRate: (packetLossRate * 100).toFixed(2) + '%',
+            averageBitrate: (averageBitrate / 1000000).toFixed(2) + ' Mbps',
+            averageFramerate: averageFramerate.toFixed(1) + ' fps',
+            qualityMode: parameters.degradationPreference
+          });
         } catch (error) {
           console.error('Error monitoring video quality:', error);
         }

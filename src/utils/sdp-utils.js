@@ -1,6 +1,10 @@
 export class SDPUtils {
   constructor() {
     this.mediaRegex = /m=([^\s]+)\s+/;
+    this.codecPreferences = {
+      video: ['VP9', 'H264', 'VP8'],
+      audio: ['opus', 'G722', 'PCMU', 'PCMA']
+    };
   }
 
   setVideoBitrates(sdp, bitrates) {
@@ -10,49 +14,45 @@ export class SDPUtils {
     let mediaSection = false;
     let videoSection = false;
 
-    for (let i = 0; i < lines.length; i++) {
-      if (lines[i].startsWith('m=')) {
-        mediaSection = true;
-        videoSection = lines[i].startsWith('m=video');
-        continue;
-      }
+    // Remove existing bitrate constraints
+    lines = lines.filter(line => !line.startsWith('b=AS:') && !line.startsWith('b=TIAS:'));
 
-      if (!mediaSection || !videoSection) continue;
-
-      // If we're in a video section and find a b= line, remove it
-      if (lines[i].startsWith('b=')) {
-        lines.splice(i, 1);
-        i--;
-        continue;
-      }
-
-      // If we hit the next media section, we're done with video
-      if (mediaSection && lines[i].startsWith('m=')) {
-        break;
-      }
-    }
-
-    // Find the video section again and add our bitrate lines
-    mediaSection = false;
-    videoSection = false;
-
+    // Add new bitrate constraints
     for (let i = 0; i < lines.length; i++) {
       if (lines[i].startsWith('m=')) {
         mediaSection = true;
         videoSection = lines[i].startsWith('m=video');
         
         if (videoSection) {
-          // Add bitrate lines after the media line
-          if (bitrates.min) {
-            lines.splice(i + 1, 0, `b=AS:${bitrates.min}`);
-            i++;
-          }
-          if (bitrates.max) {
-            lines.splice(i + 1, 0, `b=TIAS:${bitrates.max * 1000}`);
-            i++;
-          }
-          break;
+          // Add enhanced video constraints
+          lines.splice(i + 1, 0, 
+            `b=AS:${bitrates.max}`,
+            `b=TIAS:${bitrates.max * 1000}`,
+            'a=content:main',
+            'a=quality:10.0',
+            'a=setup:actpass',
+            'a=priority:high',
+            'a=x-google-start-bitrate:4000',
+            'a=x-google-min-bitrate:2500',
+            'a=x-google-max-bitrate:8000'
+          );
+          i += 9;
         }
+      }
+
+      if (!mediaSection || !videoSection) continue;
+
+      // Add specific codec parameters for better quality
+      if (lines[i].includes('VP9')) {
+        lines.splice(i + 1, 0,
+          'a=fmtp:96 profile-id=2 x-google-max-framerate=60 x-google-min-framerate=30'
+        );
+        i++;
+      } else if (lines[i].includes('H264')) {
+        lines.splice(i + 1, 0,
+          'a=fmtp:97 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f;max-fr=60;max-fs=8160'
+        );
+        i++;
       }
     }
 
@@ -66,31 +66,8 @@ export class SDPUtils {
     let mediaSection = false;
     let audioSection = false;
 
-    for (let i = 0; i < lines.length; i++) {
-      if (lines[i].startsWith('m=')) {
-        mediaSection = true;
-        audioSection = lines[i].startsWith('m=audio');
-        continue;
-      }
-
-      if (!mediaSection || !audioSection) continue;
-
-      // If we're in an audio section and find a b= line, remove it
-      if (lines[i].startsWith('b=')) {
-        lines.splice(i, 1);
-        i--;
-        continue;
-      }
-
-      // If we hit the next media section, we're done with audio
-      if (mediaSection && lines[i].startsWith('m=')) {
-        break;
-      }
-    }
-
-    // Find the audio section again and add our bitrate line
-    mediaSection = false;
-    audioSection = false;
+    // Remove existing audio bitrate constraints
+    lines = lines.filter(line => !line.startsWith('b=AS:') && !line.startsWith('b=TIAS:'));
 
     for (let i = 0; i < lines.length; i++) {
       if (lines[i].startsWith('m=')) {
@@ -98,17 +75,35 @@ export class SDPUtils {
         audioSection = lines[i].startsWith('m=audio');
         
         if (audioSection) {
-          // Add bitrate line after the media line
-          lines.splice(i + 1, 0, `b=AS:${bitrate}`);
-          break;
+          // Add enhanced audio constraints
+          lines.splice(i + 1, 0,
+            `b=AS:${bitrate}`,
+            `b=TIAS:${bitrate * 1000}`,
+            'a=quality:10.0',
+            'a=setup:actpass',
+            'a=priority:high',
+            'a=x-google-start-bitrate:256',
+            'a=x-google-min-bitrate:128',
+            'a=x-google-max-bitrate:510'
+          );
+          i += 8;
         }
+      }
+
+      if (!mediaSection || !audioSection) continue;
+
+      // Add specific codec parameters for better audio quality
+      if (lines[i].includes('opus')) {
+        lines.splice(i + 1, 0,
+          'a=fmtp:111 minptime=10;useinbandfec=1;stereo=1;maxplaybackrate=48000;sprop-maxcapturerate=48000;maxaveragebitrate=510000'
+        );
+        i++;
       }
     }
 
     return lines.join('\n');
   }
 
-  // Add FMTP parameters for better quality
   addQualityParameters(sdp) {
     const lines = sdp.split('\n');
     const newLines = [];
@@ -121,56 +116,86 @@ export class SDPUtils {
       if (lines[i].startsWith('m=')) {
         mediaSection = true;
         videoSection = lines[i].startsWith('m=video');
-        continue;
+        
+        if (videoSection) {
+          newLines.push(
+            'a=content:main',
+            'a=quality:10.0',
+            'a=setup:actpass',
+            'a=priority:high',
+            'a=x-google-cpu-overuse-detection:true',
+            'a=x-google-max-bandwidth-stats:true',
+            'a=x-google-min-bitrate:2500',
+            'a=x-google-start-bitrate:4000',
+            'a=x-google-max-bitrate:8000'
+          );
+        }
       }
 
       if (!mediaSection || !videoSection) continue;
 
-      // If we find an a=fmtp: line for VP8/VP9/H264, add quality parameters
-      if (lines[i].startsWith('a=fmtp:')) {
-        if (lines[i].includes('VP8') || lines[i].includes('VP9')) {
-          newLines.push('a=fmtp:96 x-google-min-bitrate=1000;x-google-max-bitrate=3500;x-google-start-bitrate=2500');
-        } else if (lines[i].includes('H264')) {
-          newLines.push('a=fmtp:97 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f');
-        }
+      // Enhanced codec-specific parameters
+      if (lines[i].includes('VP9')) {
+        newLines.push(
+          'a=fmtp:96 profile-id=2 x-google-max-framerate=60 x-google-min-framerate=30'
+        );
+      } else if (lines[i].includes('H264')) {
+        newLines.push(
+          'a=fmtp:97 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f;max-fr=60;max-fs=8160'
+        );
       }
     }
 
     return newLines.join('\n');
   }
 
-  // Modify SDP to prioritize quality codecs
   preferHighQualityCodecs(sdp) {
     const lines = sdp.split('\n');
     const newLines = [];
-    let mediaSection = false;
-    let videoSection = false;
+    let mediaSection = '';
 
     for (let i = 0; i < lines.length; i++) {
-      if (lines[i].startsWith('m=')) {
-        mediaSection = true;
-        videoSection = lines[i].startsWith('m=video');
+      const line = lines[i];
+
+      if (line.startsWith('m=')) {
+        mediaSection = line.split(' ')[0].substring(2);
+        const parts = line.split(' ');
+        const payloadTypes = parts.slice(3);
         
-        if (videoSection) {
-          // Modify the m= line to prioritize H264 and VP9
-          const parts = lines[i].split(' ');
-          const payloadTypes = parts.slice(3);
-          const h264Index = payloadTypes.findIndex(pt => {
-            const rtpmapLine = lines.find(l => l.includes(`a=rtpmap:${pt} H264`));
-            return rtpmapLine !== undefined;
+        // Reorder payload types based on codec preferences
+        if (this.codecPreferences[mediaSection]) {
+          const orderedPayloadTypes = [];
+          
+          // First add preferred codecs in order
+          this.codecPreferences[mediaSection].forEach(codec => {
+            const codecIndex = lines.findIndex(l => 
+              l.startsWith('a=rtpmap:') && 
+              l.toLowerCase().includes(codec.toLowerCase())
+            );
+            
+            if (codecIndex !== -1) {
+              const pt = lines[codecIndex].split(':')[1].split(' ')[0];
+              if (payloadTypes.includes(pt)) {
+                orderedPayloadTypes.push(pt);
+              }
+            }
           });
           
-          if (h264Index !== -1) {
-            const h264PT = payloadTypes[h264Index];
-            payloadTypes.splice(h264Index, 1);
-            payloadTypes.unshift(h264PT);
-            parts.splice(3, parts.length - 3, ...payloadTypes);
-            lines[i] = parts.join(' ');
-          }
+          // Then add remaining codecs
+          payloadTypes.forEach(pt => {
+            if (!orderedPayloadTypes.includes(pt)) {
+              orderedPayloadTypes.push(pt);
+            }
+          });
+          
+          // Update the media line with reordered payload types
+          parts.splice(3, parts.length - 3, ...orderedPayloadTypes);
+          newLines.push(parts.join(' '));
+          continue;
         }
       }
       
-      newLines.push(lines[i]);
+      newLines.push(line);
     }
 
     return newLines.join('\n');
